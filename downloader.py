@@ -297,15 +297,20 @@ class PlaylistDownloader:
 
                 # Download + extract audio in one pass
                 # NO format restriction - let yt-dlp pick whatever is available
-                # FFmpegExtractAudio will convert to mp3 regardless
+                # FFmpegExtractAudio + EmbedThumbnail will handle mp3 + album art
                 ydl_opts = self._base_opts()
                 ydl_opts.update({
                     "outtmpl": temp_template,
+                    "writethumbnail": True,          # download thumbnail for embedding
                     "postprocessors": [
                         {
                             "key": "FFmpegExtractAudio",
                             "preferredcodec": "mp3",
                             "preferredquality": "192",
+                        },
+                        {
+                            "key": "EmbedThumbnail",  # embed thumbnail as album art
+                            "already_have_thumbnail": False,
                         },
                     ],
                     "noprogress": False,
@@ -348,14 +353,26 @@ class PlaylistDownloader:
                     temp_mp3 = os.path.join(self.output_dir, f"{vid_id}_temp.mp3")
                     final_mp3 = os.path.join(self.output_dir, f"{final_name}.mp3")
 
+                    # Clean up any leftover thumbnail files
+                    for thumb_ext in (".jpg", ".jpeg", ".png", ".webp"):
+                        thumb_path = os.path.join(self.output_dir, f"{vid_id}_temp{thumb_ext}")
+                        if os.path.exists(thumb_path):
+                            try:
+                                os.remove(thumb_path)
+                            except Exception:
+                                pass
+
                     if os.path.exists(temp_mp3):
-                        # Embed metadata using ffmpeg
+                        # Embed artist/title/album metadata using ffmpeg
+                        # (thumbnail is already embedded by EmbedThumbnail postprocessor)
                         import subprocess
                         tagged_mp3 = os.path.join(self.output_dir, f"{vid_id}_tagged.mp3")
+                        album = info.get("album") or info.get("playlist") or ""
                         ffmpeg_cmd = [
                             FFMPEG_EXE, "-y", "-i", temp_mp3,
                             "-metadata", f"artist={real_artist}",
                             "-metadata", f"title={real_title}",
+                            "-metadata", f"album={album}",
                             "-codec", "copy",
                             tagged_mp3,
                         ]
