@@ -65,15 +65,15 @@ def adb(adb_exe, *args, capture=True, timeout=30):
         return subprocess.run(cmd, timeout=timeout), 0
 
 def list_adb_devices(adb_exe):
+    """Return list of (serial, state) tuples for all connected devices."""
     out, _ = adb(adb_exe, "devices")
     devices = []
     for line in out.splitlines()[1:]:
         line = line.strip()
         if line and "\t" in line:
             serial, state = line.split("\t", 1)
-            if state.strip() == "device":
-                devices.append(serial.strip())
-    return devices
+            devices.append((serial.strip(), state.strip()))
+    return devices, out  # also return raw output for diagnostics
 
 def adb_ls(adb_exe, serial, remote_path):
     """List filenames in a remote directory."""
@@ -192,7 +192,16 @@ class SyncApp(tk.Tk):
                                highlightthickness=0, relief="flat", bd=0)
         self._dev_menu.pack(side="left", padx=(0, 8))
         styled_btn(dev_row, "Refresh", self._refresh_devices, bg=SURFACE, hover=CARD
+                   ).pack(side="left", padx=(0, 6))
+        styled_btn(dev_row, "Diagnose", self._diagnose_adb, bg=SURFACE, hover=CARD
                    ).pack(side="left")
+
+        # ADB status message
+        self._adb_status_var = tk.StringVar(value="")
+        self._adb_status_lbl = tk.Label(self._adb_panel, textvariable=self._adb_status_var,
+                                         bg=CARD, fg=YELLOW, font=(FONT, 9), wraplength=550,
+                                         justify="left")
+        self._adb_status_lbl.pack(anchor="w", pady=(0, 6))
 
         tk.Label(self._adb_panel, text="Phone destination path:", bg=CARD, fg=SUB,
                  font=(FONT, 9)).pack(anchor="w")
@@ -312,17 +321,84 @@ class SyncApp(tk.Tk):
     def _refresh_devices(self):
         if not self._adb:
             self._update_device_menu(["ADB not found"])
+            self._adb_status_var.set("⚠ adb.exe not found. Download Platform Tools and place adb.exe here.")
             return
         try:
-            devs = list_adb_devices(self._adb)
-            if devs:
-                self._update_device_menu(devs)
-                self._log(f"ADB devices: {', '.join(devs)}")
+            devices, raw = list_adb_devices(self._adb)
+            authorized = [(s, st) for s, st in devices if st == "device"]
+            unauthorized = [(s, st) for s, st in devices if st == "unauthorized"]
+            offline = [(s, st) for s, st in devices if st not in ("device", "unauthorized")]
+
+            if authorized:
+                serials = [s for s, _ in authorized]
+                self._update_device_menu(serials)
+                self._adb_status_lbl.config(fg=GREEN)
+                self._adb_status_var.set(f"✓ {len(serials)} device(s) ready: {', '.join(serials)}")
+                self._log(f"ADB ready: {', '.join(serials)}")
+            elif unauthorized:
+                serials = [s for s, _ in unauthorized]
+                self._update_device_menu([f"{s} (unauthorized)" for s in serials])
+                self._adb_status_lbl.config(fg=YELLOW)
+                self._adb_status_var.set(
+                    "⚠ Phone found but NOT authorized!\n"
+                    "→ Unlock your phone and look for a popup:\n"
+                    "  'Allow USB debugging from this computer?' → tap ALLOW\n"
+                    "  Then click Refresh."
+                )
+                self._log(f"ADB unauthorized: {serials}. Check phone for auth dialog!")
+            elif offline:
+                self._update_device_menu(["Device offline"])
+                self._adb_status_lbl.config(fg=RED)
+                self._adb_status_var.set("⚠ Device offline. Try: unplug → replug USB cable.")
             else:
                 self._update_device_menu(["No device found"])
-                self._log("No ADB devices connected. Enable USB Debugging on phone.")
+                self._adb_status_lbl.config(fg=RED)
+                self._adb_status_var.set(
+                    "No device detected. Check:\n"
+                    "1. USB cable is plugged in\n"
+                    "2. Phone is in 'File Transfer' (MTP) or 'PTP' USB mode\n"
+                    "3. USB Debugging is enabled (Settings → Developer options)\n"
+                    "4. Phone screen is unlocked"
+                )
+                self._log("No ADB devices found. Raw output: " + raw.replace("\n", " | "))
         except Exception as e:
             self._update_device_menu([f"Error: {e}"])
+            self._adb_status_var.set(f"Error running adb: {e}")
+
+    def _diagnose_adb(self):
+        """Show a popup with full adb diagnostics."""
+        if not self._adb:
+            messagebox.showinfo("ADB", "adb.exe not found in project folder or PATH.")
+            return
+        lines = [f"ADB path: {self._adb}\n"]
+        # Kill and restart server
+        lines.append("--- adb kill-server ---")
+        out, _ = adb(self._adb, "kill-server")
+        lines.append(out or "(ok)")
+        lines.append("--- adb start-server ---")
+        out, _ = adb(self._adb, "start-server")
+        lines.append(out or "(ok)")
+        lines.append("--- adb devices -l ---")
+        out, _ = adb(self._adb, "devices", "-l")
+        lines.append(out or "(empty)")
+        text = "\n".join(lines)
+        self._log("Diagnostics:\n" + text)
+
+        # Show popup
+        win = tk.Toplevel(self)
+        win.title("ADB Diagnostics")
+        win.configure(bg=BG)
+        win.geometry("560x340")
+        t = tk.Text(win, bg=SURFACE, fg=TEXT, font=("Consolas", 9),
+                    relief="flat", bd=0, padx=10, pady=10)
+        t.pack(fill="both", expand=True, padx=10, pady=10)
+        t.insert("1.0", text)
+        t.config(state="disabled")
+        styled_btn(win, "Close & Refresh",
+                   lambda: [win.destroy(), self._refresh_devices()]
+                   ).pack(pady=(0, 10))
+        # After kill/restart, refresh
+        self.after(100, self._refresh_devices)
 
     def _update_device_menu(self, options):
         menu = self._dev_menu["menu"]
@@ -438,9 +514,14 @@ class SyncApp(tk.Tk):
             self._log("ADB not found! Place adb.exe in the project folder or install Android Platform Tools.")
             return
 
-        serial = self._dev_var.get()
-        if not serial or "No device" in serial or "Error" in serial or "not found" in serial:
-            self._log("No ADB device selected. Connect phone and enable USB Debugging.")
+        # Strip any status suffix like " (unauthorized)"
+        serial = self._dev_var.get().split(" (")[0].strip()
+        bad = ("", "No device", "Error", "not found", "offline", "unauthorized")
+        if not serial or any(b.lower() in serial.lower() for b in bad):
+            self._log("No ready ADB device. Check the status message above.")
+            return
+        if "unauthorized" in self._dev_var.get():
+            self._log("Device is unauthorized. Unlock phone and tap ALLOW on the USB debugging dialog.")
             return
 
         remote = self._remote_var.get().strip().rstrip("/")
