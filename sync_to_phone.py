@@ -138,6 +138,10 @@ class SyncApp(tk.Tk):
         self._check_adb_status()
         self.protocol("WM_DELETE_WINDOW", self._on_close)
 
+        # Restart ADB server once on startup (fixes stale server)
+        if self._adb:
+            threading.Thread(target=self._startup_adb_restart, daemon=True).start()
+
     # ── UI ─────────────────────────────────────────────────────────────────────
     def _build(self):
         # Header
@@ -312,6 +316,16 @@ class SyncApp(tk.Tk):
             self._folder_panel.pack(fill="x", pady=(0, 10))
 
     # ── ADB ────────────────────────────────────────────────────────────────────
+    def _startup_adb_restart(self):
+        """Kill and restart ADB server on startup to ensure fresh device list."""
+        try:
+            adb(self._adb, "kill-server", timeout=5)
+            adb(self._adb, "start-server", timeout=10)
+        except Exception:
+            pass
+        # Refresh device list on main thread after server restart
+        self.after(500, self._refresh_devices)
+
     def _check_adb_status(self):
         if self._adb:
             self._adb_lbl.config(text=f"ADB: {os.path.basename(self._adb)}", fg=GREEN)
