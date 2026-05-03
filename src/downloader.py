@@ -20,8 +20,9 @@ logger = logging.getLogger("downloader")
 # Browsers to try for cookie extraction (in order)
 BROWSERS_TO_TRY = ["chrome", "edge", "firefox", "opera", "brave", "chromium"]
 
-# Directory of this script
-_PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
+# Directories
+_SRC_DIR = os.path.dirname(os.path.abspath(__file__))
+_PROJECT_DIR = os.path.dirname(_SRC_DIR)
 
 
 def find_ffmpeg() -> str:
@@ -38,6 +39,7 @@ def find_ffmpeg() -> str:
     candidates = [
         _PROJECT_DIR,
         os.path.join(_PROJECT_DIR, "bin"),
+        os.path.join(_PROJECT_DIR, "tools"),
         os.path.join(_PROJECT_DIR, "ffmpeg"),
         os.path.join(_PROJECT_DIR, "ffmpeg", "bin"),
     ]

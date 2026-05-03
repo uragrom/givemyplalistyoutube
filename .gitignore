@@ -1,4 +1,5 @@
 # Runtime files
+logs/
 app.log
 config.json
 sync_config.json

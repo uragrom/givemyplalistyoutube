@@ -13,6 +13,10 @@ from tkinter import filedialog, messagebox
 import threading
 from pathlib import Path
 
+_SRC_DIR = os.path.dirname(os.path.abspath(__file__))
+_PROJECT_DIR = os.path.dirname(_SRC_DIR)
+_LOG_PATH = os.path.join(_PROJECT_DIR, "logs", "app.log")
+
 # ── Configure logging (safe for all encodings) ───────────────────────────────
 logging.basicConfig(
     level=logging.INFO,
@@ -20,7 +24,7 @@ logging.basicConfig(
     datefmt="%H:%M:%S",
     handlers=[
         logging.StreamHandler(stream=open(
-            os.path.join(os.path.dirname(os.path.abspath(__file__)), "app.log"),
+            _LOG_PATH,
             "w", encoding="utf-8"
         )),
     ],
@@ -45,7 +49,7 @@ except ImportError as e:
     sys.exit(1)
 
 # ── Config persistence ──────────────────────────────────────────────────────
-_CONFIG_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json")
+_CONFIG_PATH = os.path.join(_PROJECT_DIR, "config.json")
 
 def load_config() -> dict:
     """Load saved settings from config.json."""

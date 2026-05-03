@@ -30,8 +30,9 @@ logging.basicConfig(
 log = logging.getLogger("sync")
 
 # ── Config ─────────────────────────────────────────────────────────────────────
-_DIR = os.path.dirname(os.path.abspath(__file__))
-_CFG = os.path.join(_DIR, "sync_config.json")
+_SRC_DIR = os.path.dirname(os.path.abspath(__file__))
+_PROJECT_DIR = os.path.dirname(_SRC_DIR)
+_CFG = os.path.join(_PROJECT_DIR, "sync_config.json")
 
 def load_cfg():
     try:
@@ -49,8 +50,8 @@ def save_cfg(d):
 
 # ── ADB helpers ────────────────────────────────────────────────────────────────
 def find_adb():
-    """Find adb.exe on PATH or next to this script."""
-    local = os.path.join(_DIR, "adb.exe")
+    """Find adb.exe on PATH or in tools folder."""
+    local = os.path.join(_PROJECT_DIR, "tools", "adb.exe")
     if os.path.isfile(local):
         return local
     found = shutil.which("adb")
@@ -59,8 +60,9 @@ def find_adb():
 def adb(adb_exe, *args, capture=True, timeout=30):
     cmd = [adb_exe] + list(args)
     if capture:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
-        return r.stdout.strip(), r.returncode
+        r = subprocess.run(cmd, capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", timeout=timeout)
+        return (r.stdout or "").strip(), r.returncode
     else:
         return subprocess.run(cmd, timeout=timeout), 0
 
@@ -88,9 +90,10 @@ def adb_mkdir(adb_exe, serial, remote_path):
 
 def adb_push(adb_exe, serial, local_file, remote_path):
     cmd = [adb_exe, "-s", serial, "push", local_file, remote_path]
-    r = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+    r = subprocess.run(cmd, capture_output=True, text=True,
+                       encoding="utf-8", errors="replace", timeout=120)
     ok = r.returncode == 0
-    return ok, (r.stderr or r.stdout).strip()
+    return ok, (r.stderr or r.stdout or "").strip()
 
 
 # ── Colours ────────────────────────────────────────────────────────────────────
@@ -276,7 +279,7 @@ class SyncApp(tk.Tk):
     # ── Settings ───────────────────────────────────────────────────────────────
     def _restore(self):
         # Try to default source to last used MP3 folder from main app config
-        main_cfg_path = os.path.join(_DIR, "config.json")
+        main_cfg_path = os.path.join(_PROJECT_DIR, "config.json")
         if os.path.isfile(main_cfg_path):
             try:
                 main_cfg = json.load(open(main_cfg_path, encoding="utf-8"))
@@ -464,6 +467,29 @@ class SyncApp(tk.Tk):
         if not src or not os.path.isdir(src):
             messagebox.showwarning("Source", "Choose a valid source folder first.")
             return
+
+        mode = self._mode.get()
+
+        # ── Snapshot ADB state NOW on the main thread before the worker starts ──
+        # This prevents _refresh_devices() (triggered by the startup ADB restart)
+        # from overwriting _dev_var while the worker is already running.
+        adb_serial = None
+        adb_remote = None
+        if mode == "adb":
+            raw_dev = self._dev_var.get()
+            serial = raw_dev.split(" (")[0].strip()
+            # NOTE: do NOT include "" in this tuple — empty string is a substring
+            # of every string in Python, so `"" in serial` is always True.
+            bad = ("No device", "Error", "not found", "offline", "unauthorized")
+            if not serial or any(b.lower() in serial.lower() for b in bad):
+                messagebox.showwarning("ADB", "No ready ADB device.\nCheck the status panel and try Refresh.")
+                return
+            if "unauthorized" in raw_dev:
+                messagebox.showwarning("ADB", "Device unauthorized.\nUnlock phone and tap ALLOW on the USB debugging dialog.")
+                return
+            adb_serial = serial
+            adb_remote = self._remote_var.get().strip().rstrip("/")
+
         self._save()
         self._running = True
         self._cancel_flag.clear()
@@ -477,10 +503,9 @@ class SyncApp(tk.Tk):
         self._log_text.delete("1.0", "end")
         self._log_text.config(state="disabled")
 
-        mode = self._mode.get()
         t = threading.Thread(
             target=self._worker,
-            args=(src, mode, skip_existing),
+            args=(src, mode, skip_existing, adb_serial, adb_remote),
             daemon=True
         )
         t.start()
@@ -496,7 +521,7 @@ class SyncApp(tk.Tk):
         self._cancel_btn.config(state="disabled")
 
     # ── Worker ─────────────────────────────────────────────────────────────────
-    def _worker(self, src, mode, skip_existing):
+    def _worker(self, src, mode, skip_existing, adb_serial=None, adb_remote=None):
         try:
             # Collect source MP3s
             mp3_files = sorted([
@@ -512,7 +537,7 @@ class SyncApp(tk.Tk):
             self._log(f"Found {total} MP3 files in source")
 
             if mode == "adb":
-                self._sync_adb(src, mp3_files, skip_existing)
+                self._sync_adb(src, mp3_files, skip_existing, adb_serial, adb_remote)
             else:
                 self._sync_folder(src, mp3_files, skip_existing)
 
@@ -523,22 +548,12 @@ class SyncApp(tk.Tk):
             self.after(0, self._reset_buttons)
 
     # ── ADB sync ───────────────────────────────────────────────────────────────
-    def _sync_adb(self, src, mp3_files, skip_existing):
+    def _sync_adb(self, src, mp3_files, skip_existing, serial, remote):
         if not self._adb:
             self._log("ADB not found! Place adb.exe in the project folder or install Android Platform Tools.")
             return
 
-        # Strip any status suffix like " (unauthorized)"
-        serial = self._dev_var.get().split(" (")[0].strip()
-        bad = ("", "No device", "Error", "not found", "offline", "unauthorized")
-        if not serial or any(b.lower() in serial.lower() for b in bad):
-            self._log("No ready ADB device. Check the status message above.")
-            return
-        if "unauthorized" in self._dev_var.get():
-            self._log("Device is unauthorized. Unlock phone and tap ALLOW on the USB debugging dialog.")
-            return
-
-        remote = self._remote_var.get().strip().rstrip("/")
+        # serial and remote were validated and captured on the main thread before the worker started.
         self._log(f"ADB device: {serial}")
         self._log(f"Remote path: {remote}")
 
