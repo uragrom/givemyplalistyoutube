@@ -1,6 +1,7 @@
 # Runtime files
 app.log
 config.json
+sync_config.json
 
 # Python
 __pycache__/
