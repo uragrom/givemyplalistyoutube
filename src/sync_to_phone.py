@@ -126,7 +126,7 @@ class SyncApp(tk.Tk):
     def __init__(self):
         super().__init__()
         self.title("MP3 → Phone Sync")
-        self.geometry("700x680")
+        self.geometry("700x780")
         self.minsize(600, 560)
         self.configure(bg=BG)
         self.resizable(True, True)
